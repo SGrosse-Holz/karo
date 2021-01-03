@@ -1,20 +1,22 @@
 """
 Base classes for particles one might want to simulate
 
-The absolute base is `Particle` which on its own would basically sit on the
-track and do nothing (which is exactly the behavior we need for a `Boundary`).
-There is also a `Walker`, i.e. a particle that regularly takes steps in a
-persistent direction. `Walker` also provides some examples for collisions.
-These could be used as follows, assuming we are using a `Collider` named
-``mycoll``:
+All of these inherit from `Particle`. Note that ideally, these classes would
+not be instantiated, but serve as base classes for concrete implementations.
+Otherwise specifying collision rules gets harder.
+
+Examples
+--------
+Assuming we have a `Collider` instance ``mycoll``:
 >>> class ReflectedWalker(Walker):
 ...     pass
-... mycoll.register(ReflectedWalker, Particle, Walker.collide_reflect)
+... mycoll.register(ReflectedWalker, Particle, collisionrules.reflect)
 ...
 ... class Cleaner(Walker):
 ...     # Don't get fazed by anything except Boundaries
-...     def shouldStep(self, sim):
-...         return not any(isinstance(p, Boundary) for p in sim.track[self.position+self.direction])
+...     def steppingrule(self, sim):
+...         if not any(isinstance(p, Boundary) for p in sim.track[self.position+self.direction]):
+...             return []
 ... mycoll.register(Cleaner, Particle, Walker.collide_kickOff)
 
 Randomness where needed is generated from python's `!random` module, so this
@@ -22,73 +24,43 @@ should be seeded for reproducible results.
 """
 
 import random
-from .framework import Updateable, Reportable, Loadable
+from .constituents import *
 
-class Particle(Updateable, Reportable, Loadable):
-    """
-    Base class for particles living on the track
-
-    Attributes
-    ----------
-    position : int, optional
-        my position on the track. Set at (or after) initialization to load at
-        that position. If not specified, a position will be chosen at random at
-        `load` time.
-    """
-    def __init__(self, position=None):
-        self.position = position
-    
-    def report(self):
-        return self.position
-    
-    def load(self, sim):
-        """
-        Load the particle into a simulation
-
-        Parameters
-        ----------
-        sim : Simulation
-            the current simulation
-
-        Notes
-        -----
-        Since the 'bookkeeping' things (like inserting into the update queue)
-        are already taken care of by the superclass `Loadable`, here we can
-        focus on the `Particle` specific stuff, i.e. loading onto the track.
-        """
-        Loadable.load(self, sim) # super() might be confusing with multiple inheritance
-        
-        if self.position is None:
-            possible_positions = [i for i, pos in enumerate(sim.track) if len(pos) == 0]
-            self.position = random.choice(possible_positions)
-                
-        sim.track[self.position].append(self)
-    
-    def checkCollisions(self, sim, relative_position=0):
-        """
-        Process collisions with my neighbors
-
-        Parameters
-        ----------
-        sim : Simulation
-            the current simulation
-        relative_position : int, optional
-            the position relative to my own that should be checked for
-            collisions. Could be e.g. ``+1`` for right neighbors, ``-1`` for
-            left neighbors, etc.
-        """
-        for other in sim.track[self.position+relative_position]:
-            if relative_position == 0 and other is self:
-                continue
-            sim.collider.execute(self, other, sim)
-            sim.collider.execute(other, self, sim)
-            other.update(sim)
-            
 class Boundary(Particle):
     """
     Stationary particle that can serve as boundary
     """
     pass
+
+class TrackEnd(Boundary):
+    """
+    Used by `Simulation` to prevent particles from falling off at the end.
+    """
+    pass
+
+class FiniteLife(Updateable, Loadable):
+    """
+    Base class for anything with a finite life time
+
+    Attributes
+    ----------
+    lifetime : float
+        the remaining lifetime
+    """
+    def __init__(self, lifetime=float('inf')):
+        self.lifetime = lifetime
+
+    def nextUpdate(self, sim):
+        return min(self.lifetime, Updateable.nextUpdate(self, sim))
+
+    def update(self, sim):
+        self.lifetime -= sim.time - self.lastUpdate
+        if self.lifetime < 1e-10: # small positive threshold for numerical safety
+            sim.load(Event(self.unload))
+
+        self.lastUpdate = sim.time
+        # Note that Updateable.update automatically requeues, which would lead
+        # to an endless recursion here. So no super() call.
         
 class Walker(Particle):
     """
@@ -104,16 +76,11 @@ class Walker(Particle):
 
     Notes
     -----
-    This class provides a few ``collide_...`` methods that can be used to set
-    up collision rules for subclasses. Note that for all collision rules shown
-    here we explicitly check whether there actually is a collision. This is
-    because a directional particle probably only cares about things that happen
-    in front of it, not about whether it is bumped by something from behind (in
-    which case the collision rules of course also have to apply).
-
-    A moving particle needs one rule in addition to the collision rules, namely
-    when to take a step. This behavior can be adjusted by overriding
-    `shouldStep`.
+    In addition to collision rules, a moving particle needs a `steppingrule` to
+    decide when to take (or not take) a step. In addition, `steppingrule` can
+    return a list of actions to take before the actual step. See
+    `steppingrules`. The default rule for this class is
+    `steppingrules.careful`.
     """
     def __init__(self, speed=1, direction=None, **kwargs):
         super().__init__(**kwargs)
@@ -123,7 +90,7 @@ class Walker(Particle):
         self.speed = speed
         self.untilStep = 1/self.speed
             
-    def nextUpdate(self):
+    def nextUpdate(self, sim):
         return self.untilStep
         
     def update(self, sim):
@@ -144,11 +111,12 @@ class Walker(Particle):
             
         super().update(sim)
         
-    def shouldStep(self, sim):
+    def steppingrule(self, sim):
         """
-        Whether the current state of affairs allows to take a step
+        The stepping rule for this walker. See `steppingrules` for examples.
 
-        Default behavior is to step only if the target spot is completely free.
+        Default behavior is to step only if the target spot is completely free,
+        which is also implemented as `steppingrules.careful`.
 
         Parameters
         ----------
@@ -157,38 +125,109 @@ class Walker(Particle):
 
         Returns
         -------
-        bool
+        list or None
+            if the step is to be taken, a list of actions to take before. If
+            the step should not happen, ``None``.
+
+        See also
+        --------
+        steppingrules
         """
-        return len(sim.track[self.position + self.direction]) == 0
+        if len(sim.track[self.position+self.direction]) == 0:
+            return []
         
     def step(self, sim):
         """
-        Take a step, if possible (listens to `shouldStep`)
+        Take a step, if possible (listens to `steppingrule`)
         """
-        if self.shouldStep(sim):
+        # Check whether we can move
+        actions = self.steppingrule(sim)
+        if actions is None:
+            return
+
+        # OK, so do pre-processing
+        for action in actions:
+            action(sim)
+
+        # Take the actual step
+        try:
             sim.track[self.position].remove(self)
-            self.position += self.direction
-            sim.track[self.position].append(self)
+        except:
+            if self.position < 0 or self.position >= len(sim.track):
+                raise RuntimeError("{} left the track at t={}. Set up your simulation such that particles are contained.".format(self, sim.time))
+            else:
+                raise RuntimeError("Missing a {} on the track. This is likely an internal bug.".format(type(self)))
+        self.position += self.direction
+        sim.track[self.position].append(self)
 
-    ########## a few example collision handlers ###########
-            
-    def collide_reflect(self, particle, sim):
-        """
-        Reflect upon collision
-        """
-        if self.position+self.direction == particle.position:
-            self.direction *= -1
+class RandomWalker(Walker):
+    """
+    Base class for a random walker
 
-    def collide_kickOff(self, particle, sim):
-        """
-        Kick off collision partner, unless it is a `Boundary`
-        """
-        if (not isinstance(particle, Boundary)) and self.position+self.direction == particle.position:
-            sim.unload(particle)
+    Attributes
+    ----------
+    p_forward : float in [0, 1]
+        probability that the next step is aligned with ``self.direction``
+        (which is inherited from `Walker`).
 
-    def collide_fallOff(self, particle, sim):
-        """
-        Fall off upon collision
-        """
-        if self.position+self.direction == particle.position:
-            sim.unload(self)
+    Examples
+    --------
+    Fun fact: Remember that by default, a `Walker` only "consciously" collides
+    with particles in front of it. Therefore, using `RandomWalker` with
+    ``p_forward = 0`` gives "backward walkers" that don't see where they are
+    going. They still obey the stepping rule of "only move if you can", but
+    won't react to collisions otherwise. Using ``p_forward == 1`` on the other
+    hand of course simply gives the same behavior as `Walker`.
+    """
+    def __init__(self, p_forward=0.5, **kwargs):
+        super().__init__(**kwargs)
+        self.p_forward = p_forward
+
+    def step(self, sim):
+        old_dir = self.direction
+        if random.random() >= self.p_forward:
+            self.direction = -self.direction
+        super().step(sim)
+        self.direction = old_dir
+
+class MultiHeadParticle(Loadable, Reportable):
+    """
+    Base class for particles with multiple 'heads' on the track
+
+    Note that the `MultiHeadParticle` itself does not live on the track, and
+    therefore also is not `Updateable`. It's individual heads should be
+    `Particles <Particle>`, i.e. those will be updated. The purpose of
+    `MultiHeadParticle` is just to coordinate loading and reporting of these
+    heads.
+
+    Attributes
+    ----------
+    heads : list of Particle
+        the individual heads of the particle
+
+    Parameters
+    ----------
+    iterable : iterable of `Particle` objects, optional
+        the particles to tie together in this object. Instead of specifying at
+        initialization, you can also edit `MultiHeadParticle.heads` yourself.
+    """
+    def __init__(self, iterable=None):
+        if iterable:
+            self.heads = list(iterable)
+        else:
+            self.heads = []
+
+    def load(self, sim):
+        Loadable.load(self, sim)
+
+        for head in self.heads:
+            head.load(sim)
+            sim.reporter.unregister(head)
+
+    def unload(self, sim):
+        sim.reporter.unregister(self)
+        for head in self.heads:
+            head.unload(sim)
+
+    def report(self):
+        return tuple(head.position for head in self.heads)

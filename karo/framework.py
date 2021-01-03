@@ -6,46 +6,31 @@ straight forward manner. Overarching everything is the `Simulation` class. It
 is the centralized storage for everything and actually runs the simulation.
 
 Naturally there are many moving parts within the simulation, so there are a few
-helper types to keep these organized:
-    - `Loadable` objects can be added to the simulation using their `load
-      <Loadable.load>` function, or equivalently `Simulation.load`. This does
-      not mean that they actually have to show up anywhere in the simulation;
-      they could also just register (parts of) themselves for reporting or
-      updating, such as for example the `Reporter`.
-    - `Reportable` objects can produce a summary of themselves for simulation
-      output. For a simple particle, this would probably just be the position
-      (i.e. simply a float), but in principle this could be anything.
-    - `Updateable` objects are those that actually interact when the simulation
-      is running. They provide information on when they have to be updated
-      next, and a function to do so. For convenience, the base class also
-      defines a few functions to interact with the simulation's update queue.
-      Note that these do not necessarily have to be objects of the simulation
-      logic, but simply represent anything that needs action at simulation
-      runtime. Examples include `UnloadingEvent` and `Reporter`.
-    - the actual particles being simulated of course should have all of these
-      capabilities. Consequently, `Particle` subclasses all three.
+helper types to keep these organized. These helper types are collected in the
+`constituents` module. It includes base classes for `Updateable` things,
+`Reportable` ones, `Particles <Particle>`, `Events <Event>`, etc. I would
+recommend reading its docstring now.
 
-Next up, `Track` provides the playing field for the simulation. We use a
-`BoundSafeList` (such that we can easily query neighbors etc., without having
-to take care not to run out of bounds) whose entries are simple lists of
-references to `Updateable` objects. It is thus possible to implement logics
-where particles occupy the same space on the track. The main reason to subclass
-`BoundSafeList` here is to provide the `Track.remove` method, which cleanly
-removes an object from wherever it appears on the track. Ideally this would
-only be used as a fallback, since it scales with system size; in principle,
-objects should be able to keep track of their own references and delete them
-when prompted to do so.
+Continuing with the contents of this module, `Track` provides the playing field
+for the simulation. We use a `BoundSafeList` (such that we can easily query
+neighbors etc., without having to take care not to run out of bounds) whose
+entries are simple lists of references to `Updateable` objects. It is thus
+possible to implement logics where particles occupy the same space on the
+track. The main reason to subclass `BoundSafeList` here is to provide the
+`Track.remove` method, which cleanly removes an object from wherever it appears
+on the track. Ideally this would only be used as a fallback, since it scales
+with system size; in principle, objects should be able to keep track of their
+own references and delete them when prompted to do so.
 
 The `Collider` class is probably the central ingredient to the flexibility of
 the framework. It stores the actions to take when things collide on the track,
-and provides a method to resolve the collision logic, given the data types of
-the two colliding particles. Note that this resolution is such that **all**
-matching actions are executed, i.e. if a "moving particle" collides with a
-"boundary particle", the collider will execute the rules for ``moving particle
-<--> boundary particle``, ``particle <--> boundary particle``, ``moving
-particle <--> particle``, and ``particle <--> particle``, as long as the
-corresponding rules are specified, and assuming that "moving particle" as well
-as "boundary particle" are subclasses of "particle".
+and provides a method to resolve the collision logic, given the two colliding
+particles. Note that this resolution is such that **all** matching rules apply,
+i.e. if a `Walker` collides with a `Boundary` (both of which are subclasses of
+`Particle`), the collider will execute the rules for ``Walker <--> Boundary``,
+``Particle <--> Boundary``, ``Walker <--> Particle``, and ``Particle <-->
+Particle``, as long as the corresponding rules are specified. For more details,
+see the `collisionrules` submodule.
 
 Finally, the `Reporter` class keeps track of the generated data. Objects that
 should be included in the report have to be registered with the reporter; this
@@ -61,157 +46,11 @@ simulation will notify the reporter about events, if it is an instance of
 subclass this one.
 """
 
+import random
 from . import datastructures
+from .constituents import *
+from .baseparticles import TrackEnd
 
-class Updateable:
-    """
-    Base class for anything that needs action at simulation runtime
-
-    Attributes
-    ----------
-    lastUpdate : float
-        time of the last call to `update`. Is updated by `update`, so make sure
-        to either call ``super().update(sim)`` or do ``self.lastUpdate =
-        sim.time`` when subclassing and overriding `update`.
-    """
-    def nextUpdate(self):
-        """
-        Should return the time until the next update is necessary.
-        """
-        return float('inf')
-    
-    def queue(self, sim):
-        sim.nextUpdates.insert(sim.time+self.nextUpdate(), self)
-        
-    def unqueue(self, sim):
-        try:
-            sim.nextUpdates.removeData(self)
-        except ValueError:
-            pass
-        
-    def requeue(self, sim):
-        self.unqueue(sim)
-        self.queue(sim)
-    
-    def update(self, sim):
-        """
-        Bring the object up to date.
-
-        Parameters
-        ----------
-        sim : Simulation
-            the current simulation
-
-        Notes
-        -----
-         - this might be called earlier than the time requested by
-           `nextUpdate`, so should not rely on getting a beat from there.
-           Simply check the current state of the simulation and do whatever
-           needs to be done.
-         - you should make sure to `queue` (or, safer, `requeue`) yourself if
-           you want to be updated in the future.
-        """
-        self.requeue(sim)           # Update the to-do list in the simulation
-        self.lastUpdate = sim.time  # Remember last update
-    
-class Reportable:
-    """
-    Base class for anything that can talk to a reporter
-    """
-    def report(self):
-        """
-        Should return useful information to be stored in the report
-        """
-        return None
-    
-class Loadable:
-    """
-    Base class for anything that is loaded into the simulation as one piece.
-    """
-    def load(self, sim):
-        """
-        Load stuff into the simulation
-
-        Parameters
-        ----------
-        sim : Simulation
-            the current simulation
-
-        Notes
-        -----
-        Things to do here:
-         - `insert <OrderedLinkedList.insert>` `Updateable` things to ``sim.nextUpdates``
-         - `register <Reporter.register>` `Reportable` things with ``sim.reporter``
-         - put things on ``sim.track`` and generally do any initialization that
-           depends on the simulation
-        """
-        if isinstance(self, Updateable):
-            sim.nextUpdates.insert(sim.time+self.nextUpdate(), self)
-            self.lastUpdate = sim.time
-        if isinstance(self, Reportable):
-            sim.reporter.register(self)
-    
-    def unload(self, sim):
-        """
-        Remove yourself from the simulation.
-
-        The implementation here is a fallback that should be rigorous, but
-        might be slow.
-
-        Parameters
-        ----------
-        sim : Simulation
-            the current simulation
-        """
-        sim.track.remove(self) # Doesn't raise
-        try:
-            sim.nextUpdates.removeData(self)
-        except ValueError as err:
-            pass
-        try:
-            sim.reporter.reportables.remove(self)
-        except ValueError:
-            pass
-        
-class UnloadingEvent(Updateable, Loadable):
-    """
-    Should be submitted to the simulation to unload any `Loadable`.
-
-    Simply calling `Loadable.unload` during an update cycle might leave updates
-    unfinished and break stuff. So better to treat this as a separate event.
-
-    Parameters
-    ----------
-    ref : Loadable
-        the object to unload
-
-    Notes
-    -----
-    `Simulation.unload` is the preferred shorthand for this.
-
-    See also
-    --------
-    Simulation.load, Simulation.unload
-
-    Examples
-    --------
-    Assuming we have a `Simulation` ``sim`` and some ``particle`` that we need
-    to get rid of (which is a subclass of `Loadable`):
-    >>> sim.load(UnloadingEvent(particle))
-    ... sim.unload(particle) # equivalent
-    """
-    def __init__(self, ref):
-        self.ref = ref
-        
-    def nextUpdate(self):
-        return 0
-    
-    def update(self, sim):
-        self.ref.unload(sim)
-        
-        # Just in case
-        self.unqueue(sim)
-        
 ###############################################################################
 
 class Simulation:
@@ -227,6 +66,10 @@ class Simulation:
     dt : float, optional
         reporting time step. Set to ``None`` (default) to report all events
         whenever they happen.
+    markEnds : bool, optional
+        whether to put `TrackEnd` markers at the first and last positions of
+        the track. These will (usually) prevent things from falling off the
+        track.
 
     Attributes
     ----------
@@ -252,31 +95,27 @@ class Simulation:
 
     Examples
     --------
-    Using the types from the particle library, we can build a simulation of
-    "bouncy" particles confined to a finite track:
-    >>> mycoll = Collider()
-    ... mycoll.register(Walker, Particle, Walker.collide_reflect)
-    ...
-    ... sim = Simulation(L=100, collider=mycoll, dt=None) # event-based reporting
-    ... sim.load(Boundary(0))
-    ... sim.load(Boundary(len(sim.track)-1))
+    Using the particles defined in the `baseparticles` module, we can setup a
+    small simulation of "bouncy" particles:
+    >>> sim = Simulation(L=100, dt=None) # event-based reporting
     ... for i in range(10):
     ...     sim.load(Walker(speed=np.pi**(i/10)))
+    ... sim.collider.register(Walker, Particle, collisionrules.reflect)
     ... sim.run(50)
 
     Note that in an actual simulation setting where you might have other,
     non-reflecting walkers, you might want to subclass `Walker` to have a
     specific type that reflects off other particles:
-    >>> class ReflectedWalker(Walker):
+    >>> class GummyBear(Walker):
     ...     pass
-    ... ### mycoll.register(Walker, Particle, Walker.collide_reflect)
-    ... mycoll.register(ReflectedWalker, Particle, Walker.collide_reflect)
+    ... ### sim.collider.register(Walker, Particle, collisionrules.reflect)
+    ... sim.collider.register(GummyBear, Particle, collisionrules.reflect)
 
     """
-    def __init__(self, L, collider=None, dt=None):
+    def __init__(self, L, collider=None, dt=None, markEnds=True):
         self.time = 0
         self.track = Track(L)
-        self.nextUpdates = OrderedLinkedList()
+        self.nextUpdates = datastructures.OrderedLinkedList()
         
         if dt is None:
             self.reporter = EventBasedReporter()
@@ -287,6 +126,10 @@ class Simulation:
         self.collider = collider
         if self.collider is None:
             self.collider = Collider()
+
+        if markEnds:
+            self.load(TrackEnd(0))
+            self.load(TrackEnd(L-1))
         
     def load(self, loadable):
         """
@@ -319,15 +162,15 @@ class Simulation:
 
         Notes
         -----
-        This simply calls ``self.load(UnloadingEvent(loadable))``. Note
-        however, that one should not call ``loadable.unload`` directly, as this
-        might break the update cycle.
+        This simply calls ``self.load(Event(loadable))``. Note however, that
+        one should not call ``loadable.unload`` directly, as this might break
+        the update cycle.
 
         See also
         --------
         load
         """
-        self.load(UnloadingEvent(loadable))
+        self.load(Event(loadable.unload))
             
     def run(self, T):
         """
@@ -345,16 +188,19 @@ class Simulation:
             maximum time to run for
         """
         T += self.time # self.time is absolute time
-        while self.time < T:
-            self.time, updateable = self.nextUpdates.pop()
-            updateable.update(self)
-            
-            if isinstance(self.reporter, EventBasedReporter):
-                self.reporter.doReport(self)
+        try:
+            while self.time < T:
+                self.time, updateable = self.nextUpdates.pop()
+                updateable.update(self)
+                
+                if isinstance(self.reporter, EventBasedReporter):
+                    self.reporter.doReport(self)
+        except datastructures.EmptyList: # self.nextUpdates is empty, i.e. there's nothing left to do
+            pass
         
 ###############################################################################
 
-class Track(BoundSafeList):
+class Track(datastructures.BoundSafeList):
     """
     The playing field of the simulation
 
@@ -400,111 +246,88 @@ class Track(BoundSafeList):
                 
 class Collider:
     """
-    Registry for collision behavior
+    Registry for collision rules
 
-    A collision rule consists of two types (the types of things colliding) and
-    a function determining what happens. These functions are called "actions"
-    and have the signature ``action(obj0, obj1, sim) -> None``. Collision rules
-    are added with `register`. When assembling the full collision for two given
-    types (c.f. `get`), all appropriate rules are applied, i.e. all rules
-    applying to either the specific types given or any of their superclasses.
+    For a definition of "collision rule", see `collisionrules`.
 
-    Notes
-    -----
-    While the treatment of actions in this class is deliberately symmetric, it
-    practice one often wants to define the collision behavior as a class
-    method. For this case, note that for ``obj = Class()``, the two calls
-    ``obj.method(args)`` and ``Class.method(obj, args)`` are equivalent, such
-    that you could ``register(Class, other_Class, Class.method)``.
+    By registering a collision rule you specify that this rule should apply, if
+    the two objects in question are of the given types. Note that a rule also
+    applies to all subclasses.
     """
     def __init__(self):
         self.registry = dict()
+        self.nextActions = []
         
-    def register(self, type0, type1, action):
+    def register(self, type0, type1, rule):
         """
-        Create a new collision rule
+        Register a new collision rule
 
         Parameters
         ----------
         type0, type1 : type
-            the types to apply the rule to
-        action : callable
-            the action to take. Will be called as ``action(obj0, obj1, sim)``
+            the types to which the rule should apply
+        rule : callable
+            the rule to apply. Should have signature ``rule(obj0, obj1, sim) ->
+            list of actions``, where ``action(sim) -> None`` implements the
+            actual actions to take under this rule.
 
         Notes
         -----
         Rules are always symmetrized, i.e. it does not matter whether you
-        register ``(type0, type1, action)`` or ``(type1, type0, action_swap)``.
-        Note however that ``action is always called with the correct type
-        order, i.e. registering ``(type0, type1, action)`` will always result
-        in the call ``action(obj_of_type0, obj_of_type1, sim)``.
+        register ``(type0, type1, rule)`` or ``(type1, type0, rule_swap)``.
+        Note however that ``rule`` is always called with the correct type
+        order, i.e. registering ``(type0, type1, rule)`` will always result
+        in the call ``rule(obj_of_type0, obj_of_type1, sim)``.
         """
-        self.registry[(type0, type1)] = action
-        
-    def get(self, type0, type1):
+        self.registry[(type0, type1)] = rule
+        if not type0 is type1:
+            self.registry[(type1, type0)] = lambda obj1, obj0, sim : rule(obj0, obj1, sim)
+        # if the two types are identical, the symmetrization has to happen
+        # explicitly at runtime. See newCollision.
+
+    def newCollision(self, obj0, obj1, sim):
         """
-        Assemble full collision rule for a given pair of types (or objects)
+        Process collision and append necessary actions to to-do list.
 
         Parameters
         ----------
-        type0, type1 : type or object
-            if these are objects, those object's type will be used.
-
-        Returns
-        -------
-        callable
-            the action to take when these two types collide (taking into
-            account inherited actions).
-
-        See also
-        --------
-        execute
-        """
-        if not isinstance(type0, type):
-            type0 = type(type0)
-        if not isinstance(type1, type):
-            type1 = type(type1)
-            
-        actions = []
-        type_order_correct = []
-        for coltypes in self.registry:
-            if issubclass(type0, coltypes[0]) and issubclass(type1, coltypes[1]):
-                actions.append(self.registry[coltypes])
-                type_order_correct.append(True)
-            elif issubclass(type0, coltypes[1]) and issubclass(type1, coltypes[0]):
-                actions.append(self.registry[coltypes])
-                type_order_correct.append(False)
-                
-        def fullCollision(p1, p2, sim):
-            for action, order_correct in zip(actions, type_order_correct):
-                if order_correct:
-                    action(p1, p2, sim)
-                else:
-                    action(p2, p1, sim)
-                
-        return fullCollision
-    
-    def execute(self, obj0, obj1, sim):
-        """
-        Execute collision for two objects
-
-        Parameters
-        ----------
-        obj0, obj1 : object
-            the objects to collide
+        obj0, obj1 : objects
+            the objects undergoing collision
         sim : Simulation
             the current simulation, for context
 
         Notes
         -----
-        This is simply a shorthand for ``self.get(type(obj0), type(obj1))(obj0,
-        obj1, sim)``.
+        This function only runs through all the rules appropriate to the two
+        input objects, but does not yet execute anything, such that you can
+        first process more collisions, before changing the simulation state.
+        Once all rules are applied, call `execute` to run all the accumulated
+        actions.
 
         See also
         --------
-        get
+        execute
         """
-        self.get(type(obj0), type(obj1))(obj0, obj1, sim)
+        for type0, type1 in self.registry:
+            if isinstance(obj0, type0) and isinstance(obj1, type1):
+                self.nextActions += self.registry[(type0, type1)](obj0, obj1, sim)
+                if type0 is type1:
+                    self.nextActions += self.registry[(type1, type0)](obj1, obj0, sim)
+
+    def execute(self, sim):
+        """
+        Execute all actions accumulated since last call
+
+        Parameters
+        ----------
+        sim : Simulation
+            the current simulation, for context
+        """
+        try:
+            while True:
+                self.nextActions.pop()(sim)
+        except IndexError:
+            pass
         
 ###############################################################################
 
@@ -525,9 +348,7 @@ class Reporter:
     --------
     EventBasedReporter, TimeBasedReporter
     """
-    def __init__(self, dt=None):
-        self.dt = dt
-        self.nextReport = 0
+    def __init__(self):
         self.reportables = []
         self.out = []
         
@@ -542,6 +363,21 @@ class Reporter:
         """
         if reportable not in self.reportables:
             self.reportables.append(reportable)
+
+    def unregister(self, reportable):
+        """
+        Remove an object from reporting
+
+        Parameters
+        ----------
+        reportable : Reportable
+            the object that should not appear in the reports
+        """
+        try:
+            while True:
+                self.reportables.remove(reportable)
+        except ValueError:
+            pass
         
     def doReport(self, sim):
         """
@@ -580,13 +416,18 @@ class TimeBasedReporter(Reporter, Updateable, Loadable):
     ----------
     dt : float
         time interval between two reports
+    initial_offset : float, optional
+        by how much to offset the reporting times from integer multiples of
+        `!dt`. This is useful when running simulations in discrete time,
+        because with a slight offset, the simulation can update at integer
+        multiples of `!dt`, then will be reported.
     """
-    def __init__(self, dt):
+    def __init__(self, dt, initial_offset=1e-5):
         super().__init__()
         self.dt = dt
-        self.nextReport = 0 # report initial conditions
+        self.nextReport = initial_offset # report initial conditions
 
-    def nextUpdate(self):
+    def nextUpdate(self, sim):
         return self.nextReport
             
     def update(self, sim):
@@ -603,7 +444,7 @@ class TimeBasedReporter(Reporter, Updateable, Loadable):
 from matplotlib import pyplot as plt
 import numpy as np
 
-def showSim(reporter_out, colors):
+def showSim(reporter_out, colors, **kwargs):
     """
     Plot a visualization of the simulation
 
@@ -611,6 +452,8 @@ def showSim(reporter_out, colors):
     better things we could do.
 
     Assumes that anything reported is a position.
+
+    kwargs will be forwarded to `!plt.scatter`.
 
     Parameters
     ----------
@@ -624,5 +467,11 @@ def showSim(reporter_out, colors):
     """
     for report in reporter_out:
         for curtype in report:
+            if type(curtype) is not type:
+                continue
             pos = np.asarray(report[curtype]).flatten()
-            plt.scatter(report['time']*np.ones(len(pos)), pos)
+            try:
+                color = colors[curtype]
+            except KeyError:
+                color = 'black'
+            plt.scatter(report['time']*np.ones(len(pos)), pos, color=color, **kwargs)

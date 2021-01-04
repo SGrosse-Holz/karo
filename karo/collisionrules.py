@@ -35,6 +35,23 @@ def kickOff(walker, particle, sim):
         return [action]
     return []
 
+def burnOff(walker, particle, sim):
+    """
+    Same as kickOff, but also acts when the walker is being bumped from behind.
+
+    If you want a picture for the naming conventions: kicking someone off the
+    track is an active thing, so it needs your focus, i.e. happens only in the
+    direction you are looking/walking. Here on the other hand, the walker is
+    burning hot, such that everyone touching it will just die, no matter
+    whether it is actively paying attention or not.
+    """
+    front = walker.position+walker.direction
+    back = walker.position-walker.direction
+    if front == particle.position or back == particle.position:
+        def action(sim) : sim.load(Event(particle.unload))
+        return [action]
+    return []
+
 def fallOff(walker, particle, sim):
     """
     Fall off upon collision

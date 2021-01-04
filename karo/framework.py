@@ -47,6 +47,8 @@ subclass this one.
 """
 
 import random
+from copy import deepcopy
+
 from . import datastructures
 from .constituents import *
 from .baseparticles import TrackEnd
@@ -403,7 +405,58 @@ class EventBasedReporter(Reporter):
     If `Simulation.reporter` is of this type, it will be asked to `doReport`
     after each update step of the simulation.
     """
-    pass
+    def discretize(self, discretization=1, **kwargs):
+        """
+        Discretize my data and return a corresponding `TimeBasedReporter`.
+
+        All input not listed below will be forwarded to the constructor of the
+        returned `TimeBasedReporter`.
+
+        Parameters
+        ----------
+        discretization : tuple or float, optional
+            how to discretize. If this is a float, it will simply be the time
+            step and all the data in `self` will be discretized, starting
+            at the first time point. If it is a tuple, it should be ``(start,
+            stop, step)``, where all but ``step`` can be ``None`` to indicate
+            maximal extent. Python style, we will report everything within the
+            half-open ``[start, stop)``.
+
+        See also
+        --------
+        TimeBasedReporter
+        """
+        if isinstance(discretization, float):
+            discretization = (None, None, discretization)
+        if not (isinstance(discretization, tuple) and len(discretization) == 3) or discretization[2] is None:
+            raise ValueError("Did not understand 'discretization' argument: {}".format(str(discretization)))
+        start, stop, step = discretization
+        if start is None:
+            start = self.out[0]['time']
+        if stop is None:
+            stop = self.out[-1]['time'] + step
+
+        # Once all Nones are resolved, we know all the time points that should
+        # appear in the output reporter (i.e. those do not depend on the data
+        # anymore)
+        def dt_gen(start, stop, step):
+            cur = start
+            while cur < stop:
+                yield cur
+                cur += step
+
+        # Assemble output
+        timebased = TimeBasedReporter(step, **kwargs)
+        i_report = -1
+        for reporttime in dt_gen(start, stop, step):
+            while i_report+1 < len(self.out) and self.out[i_report+1]['time'] <= reporttime + timebased.offset:
+                i_report += 1
+
+            rep = deepcopy(self.out[i_report])
+            rep['time'] = reporttime
+            timebased.out.append(rep)
+
+        return timebased
 
 class TimeBasedReporter(Reporter, Updateable, Loadable):
     """
@@ -416,27 +469,35 @@ class TimeBasedReporter(Reporter, Updateable, Loadable):
     ----------
     dt : float
         time interval between two reports
-    initial_offset : float, optional
+    offset : float, optional
         by how much to offset the reporting times from integer multiples of
         `!dt`. This is useful when running simulations in discrete time,
         because with a slight offset, the simulation can update at integer
-        multiples of `!dt`, then will be reported.
+        multiples of `!dt`, then will be reported. Note that the offset will be
+        removed from the reported times, i.e. ultimately the report stating it
+        happened at a time ``t`` will be generated from the simulation at time
+        ``t+offset``.
     """
-    def __init__(self, dt, initial_offset=1e-5):
+    def __init__(self, dt, offset=1e-5):
         super().__init__()
         self.dt = dt
-        self.nextReport = initial_offset # report initial conditions
+        self.offset = offset
+        self.nextReport = offset # report initial conditions
 
     def nextUpdate(self, sim):
         return self.nextReport
             
     def update(self, sim):
         self.nextReport -= sim.time - self.lastUpdate
-        if self.nextReport < 1e10:
+        if self.nextReport < 1e-10:
             self.doReport(sim)
-            self.nextReport = self.dt
+            self.nextReport += self.dt
             
         Updateable.update(self, sim) # Housekeeping (update to-do and keep track of lastUpdate)
+
+    def doReport(self, sim):
+        Reporter.doReport(self, sim)
+        self.out[-1]['time'] -= self.offset
 
 ################################################################################
 # Probably just for development

@@ -76,7 +76,7 @@ if __name__ == "__main__":
     #   collision rules at all, since "just don't move further" is the stepping
     #   rule. For demonstration purposes, here we make cohesin legs bounce off
     #   each other
-    sim = karo.Simulation(L=L_track, dt=0.5)
+    sim = karo.Simulation(L=L_track)
     sim.collider.register(CohesinLeg, CohesinLeg, karo.collisionrules.reflect) # for fun
 
     # Load particles
@@ -102,5 +102,5 @@ if __name__ == "__main__":
 
     colors = {Cohesin : 'blue', Boundary : 'black', CTCF : 'red', RNAP : 'green'}
     plt.figure(figsize=[15, 7])
-    showSim(sim.reporter.out, colors, s=5)
+    showSim(sim.reporter.discretize((None, None, 0.5)).out, colors, s=5)
     plt.show()

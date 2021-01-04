@@ -14,14 +14,10 @@ class CohesinLeg(Walker):
         super().__init__(**kwargs)
 
 class Cohesin(MultiHeadParticle, FiniteLife):
-    def __init__(self, **kwargs):
-        self.meanLife = float('inf')
-        if 'lifetime' in kwargs:
-            self.meanLife = kwargs['lifetime']
-            del kwargs['lifetime']
-
-        if self.meanLife < float('inf'):
-            mylifetime = random.expovariate(1/self.meanLife)
+    def __init__(self, meanlife=float('inf'), **kwargs):
+        self.meanlife = meanlife
+        if self.meanlife < float('inf'):
+            mylifetime = random.expovariate(1/self.meanlife)
         else:
             mylifetime = float('inf')
 
@@ -49,7 +45,7 @@ class Cohesin(MultiHeadParticle, FiniteLife):
         # If we unload bc of lifetime, immediately reload a new one
         if self.lifetime < 1e-10:
             def myreload(sim):
-                sim.load(Cohesin(lifetime=self.meanLife, speed=self.heads[0].speed))
+                sim.load(Cohesin(meanlife=self.meanlife, speed=self.heads[0].speed))
 
             sim.load(Event(myreload))
 
@@ -84,7 +80,7 @@ if __name__ == "__main__":
         sim.load(CTCF(position=pos))
 
     for _ in range(N_cohesin):
-        sim.load(Cohesin(lifetime=10, speed=2))
+        sim.load(Cohesin(meanlife=10, speed=2))
 
     # Run for a bit
     sim.run(50)
@@ -102,5 +98,5 @@ if __name__ == "__main__":
 
     colors = {Cohesin : 'blue', Boundary : 'black', CTCF : 'red', RNAP : 'green'}
     plt.figure(figsize=[15, 7])
-    showSim(sim.reporter.discretize((None, None, 0.5)).out, colors, s=5)
+    showSim(sim.reporter.resample((None, None, 0.5)).out, colors, s=5)
     plt.show()

@@ -81,6 +81,16 @@ class Walker(Particle):
     return a list of actions to take before the actual step. See
     `steppingrules`. The default rule for this class is
     `steppingrules.careful`.
+
+    Side note: if your simulation contains things that happen at exactly equal
+    time in theory, the order of these might be unpredictable due to floating
+    point arithmetic. This is considered okay, since for things that happen at
+    **exactly** the same time in theory, the order should not matter. If this
+    is a problem, consider introducing a small shift in the timing (e.g. by
+    using an `Event` to load your particle a little bit after the integer
+    time). Floating point errors on most machines are of order 1 in 10**16, so
+    an offset of ``1e-7`` should be fine, if you're planning to take less than
+    a billion steps.
     """
     def __init__(self, speed=1, direction=None, **kwargs):
         super().__init__(**kwargs)
@@ -158,7 +168,7 @@ class Walker(Particle):
             else:
                 raise RuntimeError("Missing a {} on the track. This is likely an internal bug.".format(type(self)))
         self.position += self.direction
-        sim.track[self.position].append(self)
+        sim.track[self.position].add(self)
 
 class RandomWalker(Walker):
     """

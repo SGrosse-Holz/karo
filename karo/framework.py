@@ -190,9 +190,14 @@ class Simulation:
             maximum time to run for
         """
         T += self.time # self.time is absolute time
+        running = True
         try:
-            while self.time < T:
+            while running:
                 self.time, updateable = self.nextUpdates.pop()
+                if self.time > T:
+                    self.time = T
+                    running = False
+
                 updateable.update(self)
                 
                 if isinstance(self.reporter, EventBasedReporter):
@@ -208,11 +213,11 @@ class Track(datastructures.BoundSafeList):
 
     This class keeps track of the objects in the simulation in the way we also
     imagine them: as arranged on a linear track. This makes random access by
-    location O(1). The track itself is a list of lists of references to said
-    objects, such that an arbitrary number of objects can sit at the same
-    position. An empty field is marked by an empty list of references, as
-    expected. Consequently, it makes sense to simply return an empty list when
-    indices outside the actual range of the track are queried. This is the
+    location O(1). The track itself is a list of sets of references to said
+    objects, such that an arbitrary number of objects can sit (unordered) at
+    the same position. An empty field is marked by an empty set of references,
+    as expected. Consequently, it makes sense to simply return an empty set
+    when indices outside the actual range of the track are queried. This is the
     behavior of `BoundSafeList`.
 
     Parameters
@@ -221,28 +226,77 @@ class Track(datastructures.BoundSafeList):
         total length of the track
     """
     def __init__(self, L):
-        # Note: L*[[]] gives a list of length L where each entry is *the same* empty list
-        super().__init__([[] for _ in range(L)], outOfBounds_value=[])
+        # Note: L*[set()] gives a list of length L where each entry is *the same* empty set
+        super().__init__([set() for _ in range(L)], outOfBounds_value=set())
         
     def remove(self, value):
         """
-        Remove a given reference from all of the positions it appears in.
-
-        This function is only for fallback, ideally a particle would keep track
-        of its own references and delete them upon unloading.  Only if
-        performance is not crucial, this function might be easier
+        Remove the specified object.
 
         Parameters
         ----------
         value : object
             the object to remove
+
+        Notes
+        -----
+        We have to override list's ``remove()``, because that would remove a
+        track space, instead of an item in that space.
+
+        This will remove only the first occurence of `value`. Particles should
+        not occur in multiple places on the track. See
+        `baseparticles.MultiHeadParticle` for a way to implement something that
+        interacts with the track in multiple places (spoiler: have each
+        interaction point be a `Particle` and just tie them together in
+        some overarching object).
         """
         for pos in self:
             try:
-                while True:
-                    pos.remove(value)
-            except ValueError:
-                pass
+                pos.remove(value)
+            except KeyError:
+                continue
+
+    def nextEmpty(self, start, direction):
+        """
+        Find index of next empty space on the track
+
+        This is useful for detecting/processing "trains" of stuff, i.e. if
+        there is one particle pushing five others in front of it. In this case,
+        this function would quickly give the end of this train.
+
+        Parameters
+        ----------
+        start : int
+            the start of the train, i.e. where to start looking
+        direction : {-1, 1}
+            in which direction to advance
+
+        Returns
+        -------
+        int
+            the index of the first empty space found in the given direction
+        """
+        pos = start
+        while len(self[pos]) > 0:
+            pos += direction
+        return pos
+
+    def aggregate(self, positions):
+        """
+        Get a union of all the given positions
+
+        Parameters
+        ----------
+        positions : iterable
+            the positions 
+
+        Examples
+        --------
+        Check whether some stretch of ``track`` contains a given particle type:
+        >>> if any(isinstance(p, Boundary) for p in track.aggregate(range(5, 20))):
+        ...     print("There's a Boundary somewhere in the stretch [5, 20)")
+        """
+        return set().union(*(self[i] for i in positions))
                 
 ###############################################################################
                 
@@ -266,12 +320,15 @@ class Collider:
 
         Parameters
         ----------
-        type0, type1 : type
-            the types to which the rule should apply
-        rule : callable
+        type0, type1 : type or list of types
+            the types to which the rule should apply. Can be lists to indicate
+            multiple types at once. If both are lists, rules for their
+            cartesian product will be registered.
+        rule : callable or list of such
             the rule to apply. Should have signature ``rule(obj0, obj1, sim) ->
             list of actions``, where ``action(sim) -> None`` implements the
-            actual actions to take under this rule.
+            actual actions to take under this rule. Can also be a list of
+            rules.
 
         Notes
         -----
@@ -281,6 +338,26 @@ class Collider:
         order, i.e. registering ``(type0, type1, rule)`` will always result
         in the call ``rule(obj_of_type0, obj_of_type1, sim)``.
         """
+        # Resolve lists recursively
+        if isinstance(type0, list):
+            for t in type0:
+                self.register(t, type1, rule)
+            return
+        if isinstance(type1, list):
+            for t in type1:
+                self.register(type0, t, rule)
+            return
+
+        # Assemble rule, if it needs assembling
+        if isinstance(rule, list):
+            def concatRule(obj0, obj1, sim):
+                actions = []
+                for subrule in rule:
+                    actions += subrule(obj0, obj1, sim)
+                return actions
+            rule = concatRule
+
+        # Finally, actually register
         self.registry[(type0, type1)] = rule
         if not type0 is type1:
             self.registry[(type1, type0)] = lambda obj1, obj0, sim : rule(obj0, obj1, sim)
@@ -398,16 +475,9 @@ class Reporter:
             report[curtype].append(reportable.report())
         self.out.append(report)
 
-class EventBasedReporter(Reporter):
-    """
-    Event-based reporter
-
-    If `Simulation.reporter` is of this type, it will be asked to `doReport`
-    after each update step of the simulation.
-    """
-    def discretize(self, discretization=1, **kwargs):
+    def resample(self, discretization=1, **kwargs):
         """
-        Discretize my data and return a corresponding `TimeBasedReporter`.
+        Resample my reports and return a corresponding `TimeBasedReporter`.
 
         All input not listed below will be forwarded to the constructor of the
         returned `TimeBasedReporter`.
@@ -426,7 +496,7 @@ class EventBasedReporter(Reporter):
         --------
         TimeBasedReporter
         """
-        if isinstance(discretization, float):
+        if isinstance(discretization, (float, int)):
             discretization = (None, None, discretization)
         if not (isinstance(discretization, tuple) and len(discretization) == 3) or discretization[2] is None:
             raise ValueError("Did not understand 'discretization' argument: {}".format(str(discretization)))
@@ -456,7 +526,23 @@ class EventBasedReporter(Reporter):
             rep['time'] = reporttime
             timebased.out.append(rep)
 
+        # Fix up timebased to actually look like a Reporter that was used for
+        # simulation. Probably this is useless beautification, but you never
+        # know what people get up to. (If we return a Reporter, it should
+        # really be a valid one, not just a container for out)
+        timebased.reportables = self.reportables.copy() # Top-level copy only, i.e. exactly what we need here
+        timebased.nextReport = step
+        timebased.lastUpdate = timebased.out[-1]['time'] + timebased.offset
         return timebased
+
+class EventBasedReporter(Reporter):
+    """
+    Event-based reporter
+
+    If `Simulation.reporter` is of this type, it will be asked to `doReport`
+    after each update step of the simulation.
+    """
+    pass
 
 class TimeBasedReporter(Reporter, Updateable, Loadable):
     """

@@ -60,3 +60,35 @@ def fallOff(walker, particle, sim):
         def action(sim) : sim.load(Event(walker.unload))
         return [action]
     return []
+
+################################################################################
+
+def swapRule(rule):
+    """
+    Swap the input arguments for a rule
+
+    This is necessary if you have multiple rules that should apply to a
+    collision, and have to adjust which one is acting on what.
+
+    Parameters
+    ----------
+    rule : callable
+        a collision rule, i.e. callable with signature ``rule(obj0, obj1, sim)
+        -> list of actions``
+
+    Returns
+    -------
+    callable
+        the same rule, but now with signature ``rule(obj1, obj0, sim) -> list
+        of actions``
+
+    Examples
+    --------
+    Assume you have a ``Bouncy`` particle that should bounce off most things it
+    meets, and a ``Pusher`` particle, that falls off upon encountering the
+    bouncy one. Both `reflect` and `fallOff` act on their first argument, so we
+    have to adjust one of them accordingly. Assume we register collisions with
+    a `Collider` ``mycoll``:
+    >>> mycoll.register(Bouncy, Pusher, [reflect, swapRule(fallOff)])
+    """
+    return lambda obj1, obj0, sim : rule(obj0, obj1, sim)

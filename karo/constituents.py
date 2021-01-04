@@ -173,9 +173,11 @@ class Event(Updateable, Loadable):
     
     def update(self, sim):
         self.countdown -= sim.time - self.lastUpdate
-        if self.countdown <= 0:
+        if self.countdown < 1e-10:
             self.action(sim)
             self.unqueue(sim)
+        else:
+            self.requeue(sim)
         self.lastUpdate = sim.time
         
 class Particle(Updateable, Reportable, Loadable):
@@ -249,7 +251,7 @@ class Particle(Updateable, Reportable, Loadable):
             possible_positions = [i for i, pos in enumerate(sim.track) if len(pos) == 0]
             self.position = random.choice(possible_positions)
                 
-        sim.track[self.position].append(self)
+        sim.track[self.position].add(self)
     
     def checkCollisions(self, sim, relative_position=0):
         """

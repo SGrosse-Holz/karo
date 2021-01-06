@@ -5,6 +5,8 @@ except KeyError:
     pass
 
 import subprocess # for running example script
+import random
+random.seed(10)
 
 import unittest
 from unittest.mock import patch, Mock
@@ -171,7 +173,9 @@ class TestSim(unittest.TestCase):
         sim = karo.Simulation(L=L_track, dt=1)
         for _ in range(N_particles):
             sim.load(GummyBear(speed=1))
-        sim.collider.register([GummyBear, karo.particles.Walker], [karo.particles.Walker], [karo.collisionrules.reflect, karo.collisionrules.kickOff])
+        sim.collider.register([GummyBear, karo.particles.Walker],
+                [karo.particles.Walker],
+                [karo.collisionrules.reflect, karo.collisionrules.swapRule(karo.collisionrules.kickOff)])
         sim.run(5)
 
     def test_example(self):

@@ -39,9 +39,10 @@ def pushy_soft(walker, sim):
     required actions will be taken, the pushed walkers will not actually be
     asked to `step <Walker.step>`, but simply moved.
     """
-    if all(isinstance(p, Walker) for p in sim.track[walker.position+walker.direction]):
+    nextPos = sim.track[walker.position+walker.direction]
+    if len(nextPos) > 0 and all(isinstance(p, Walker) for p in nextPos):
         actions = []
-        for other_walker in sim.track[walker.position+walker.direction]:
+        for other_walker in nextPos:
             old_dir = other_walker.direction
             other_walker.direction = walker.direction
             try:
@@ -52,13 +53,15 @@ def pushy_soft(walker, sim):
                 other_walker.direction = old_dir
 
         def shiftOthers(sim):
-            for other_walker in sim.track[walker.position+walker.direction]:
+            for other_walker in nextPos:
                 sim.track[walker.position+2*walker.direction].add(other_walker)
                 other_walker.position += walker.direction
             sim.track[walker.position+walker.direction] = set()
 
         actions.append(shiftOthers)
         return actions
+    else:
+        return None
 
 def pushy_hard(walker, sim):
     """

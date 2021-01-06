@@ -6,7 +6,7 @@ except KeyError:
 
 import subprocess # for running example script
 import random
-random.seed(10)
+random.seed(6)
 
 import unittest
 from unittest.mock import patch, Mock

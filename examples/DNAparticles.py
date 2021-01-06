@@ -4,7 +4,7 @@ Example implementation of DNA bound particles like cohesin, CTCF, RNAP.
 import random
 
 import karo
-from karo.baseparticles import *
+from karo.particles import *
 
 ################################################################################
 
@@ -14,6 +14,9 @@ class CohesinLeg(Walker):
         super().__init__(**kwargs)
 
 class Cohesin(MultiHeadParticle, FiniteLife):
+    # Note that since MultiHeadParticle is not Updateable, and FiniteLife
+    # overrides only the Updateable methods, we don't have to explicitly take
+    # care of their interaction
     def __init__(self, meanlife=float('inf'), **kwargs):
         self.meanlife = meanlife
         if self.meanlife < float('inf'):
@@ -94,9 +97,8 @@ if __name__ == "__main__":
 
     # Output
     from matplotlib import pyplot as plt
-    from karo.framework import showSim
 
     colors = {Cohesin : 'blue', Boundary : 'black', CTCF : 'red', RNAP : 'green'}
     plt.figure(figsize=[15, 7])
-    showSim(sim.reporter.resample((None, None, 0.5)).out, colors, s=5)
+    karo.showSim(sim.reporter.resample((None, None, 0.5)).out, colors, s=5)
     plt.show()

@@ -164,8 +164,8 @@ class Simulation:
 
         Notes
         -----
-        This simply calls ``self.load(Event(loadable))``. Note however, that
-        one should not call ``loadable.unload`` directly, as this might break
+        This simply calls ``self.load(Event(loadable.unload))``. Note that
+        ``loadable.unload`` should not be called directly, as this might break
         the update cycle.
 
         See also
@@ -187,7 +187,15 @@ class Simulation:
         Parameters
         ----------
         T : float
-            maximum time to run for
+            maximum time to run for (inclusive)
+
+        Examples
+        --------
+        Since `T` is the **inclusive** runtime, ``sim.run(0)`` can make sense,
+        since it executes exactly everything in the to-do list that would
+        happen immediately.
+        >>> sim.unload(particle) # just loads an Event to unload the particle
+        ... sim.run(0) # Now the particle will actually be unloaded.
         """
         T += self.time # self.time is absolute time
         running = True
@@ -350,17 +358,18 @@ class Collider:
 
         # Assemble rule, if it needs assembling
         if isinstance(rule, list):
-            def concatRule(obj0, obj1, sim):
+            def fullRule(obj0, obj1, sim):
                 actions = []
                 for subrule in rule:
                     actions += subrule(obj0, obj1, sim)
                 return actions
-            rule = concatRule
+        else:
+            fullRule = rule
 
         # Finally, actually register
-        self.registry[(type0, type1)] = rule
+        self.registry[(type0, type1)] = fullRule
         if not type0 is type1:
-            self.registry[(type1, type0)] = lambda obj1, obj0, sim : rule(obj0, obj1, sim)
+            self.registry[(type1, type0)] = lambda obj1, obj0, sim : fullRule(obj0, obj1, sim)
         # if the two types are identical, the symmetrization has to happen
         # explicitly at runtime. See newCollision.
 

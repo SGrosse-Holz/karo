@@ -46,6 +46,11 @@ class FiniteLife(Updateable, Loadable):
     ----------
     lifetime : float
         the remaining lifetime
+
+    Notes
+    -----
+    If subclassing this together with some other particle type, make sure to
+    call both types' `!nextUpdate` and `!update` method.
     """
     def __init__(self, lifetime=float('inf')):
         self.lifetime = lifetime
@@ -169,43 +174,6 @@ class Walker(Particle):
                 raise RuntimeError("Missing a {} on the track. This is likely an internal bug.".format(type(self)))
         self.position += self.direction
         sim.track[self.position].add(self)
-
-class RandomWalker(Walker):
-    """
-    Base class for a random walker
-
-    Attributes
-    ----------
-    p_forward : float in [0, 1]
-        probability that the next step is aligned with ``self.direction``
-        (which is inherited from `Walker`).
-
-    Notes
-    -----
-    `RandomWalker` (as opposed to `Walker`) is backward-conscious, i.e. it will
-    consult its collision rules also for collisions from the "back". We
-    implement it that way, because the direction of a random walker can change
-    at every step, so for the purpose of collision detection, there is not much
-    meaning to "forward" vs. "backward". You can still ignore backwards
-    collisions by using direction-sensitive collision rules (which the default
-    ones are).
-    """
-    def __init__(self, p_forward=0.5, **kwargs):
-        super().__init__(**kwargs)
-        self.p_forward = p_forward
-
-    def update(self, sim):
-        # Only thing we have to do is to prepend the check for backwards
-        # collisions, everything else is the same as for a Walker.
-        self.checkCollisions(sim, relative_position=-self.direction)
-        super().update(sim)
-
-    def step(self, sim):
-        old_dir = self.direction
-        if random.random() >= self.p_forward:
-            self.direction = -self.direction
-        super().step(sim)
-        self.direction = old_dir
 
 class MultiHeadParticle(Loadable, Reportable):
     """
